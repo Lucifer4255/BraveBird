@@ -40,7 +40,7 @@ const EnvSchema = z.object({
   // its own endpoint, so no base URL needed. Cheap model by default; override freely.
   AI_LOCATOR_ENABLED: boolish(false),
   OPENROUTER_API_KEY: z.string().optional().transform((v) => (v ? v : undefined)),
-  AI_LOCATOR_MODEL: z.string().default("google/gemini-2.0-flash-001"),
+  AI_LOCATOR_MODEL: z.string().default("google/gemini-2.5-flash-lite"),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
