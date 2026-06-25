@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Runtime artifacts
+storageState*.json
+sessions/
+telemetry/
+playwright-report/
+test-results/

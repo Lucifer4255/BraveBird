@@ -1,0 +1,29 @@
+{
+  "name": "bravebird-automation",
+  "version": "1.0.0",
+  "description": "Resilient browser-automation worker (Playwright) — stealth, self-healing locators, async orchestration, telemetry.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "stealth:check": "tsx src/scripts/stealthCheck.ts",
+    "locators:check": "tsx src/scripts/locatorCheck.ts"
+  },
+  "dependencies": {
+    "@openrouter/sdk": "^0.12.79",
+    "bullmq": "^5.66.0",
+    "dotenv": "^17.2.0",
+    "ioredis": "^5.9.0",
+    "playwright": "^1.61.1",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
