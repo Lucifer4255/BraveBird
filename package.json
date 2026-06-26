@@ -1,17 +1,17 @@
 {
   "name": "bravebird-automation",
   "version": "1.0.0",
-  "description": "Resilient browser-automation worker (Playwright) — stealth, self-healing locators, async orchestration, telemetry.",
+  "description": "Resilient browser-automation worker (Playwright) \u2014 stealth, self-healing locators, async orchestration, telemetry.",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx src/main.ts",
+    "dev": "node init && tsx src/main.ts",
     "worker": "tsx src/orchestration/serve.ts",
     "enqueue": "tsx src/scripts/enqueue.ts",
-    "build": "tsc",
-    "start": "node dist/main.js",
+    "build": "node init && tsc",
+    "start": "node init && node dist/main.js",
     "booking": "tsx src/scripts/runBooking.ts",
     "stealth:check": "tsx src/scripts/stealthCheck.ts",
     "locators:check": "tsx src/scripts/locatorCheck.ts",
@@ -29,6 +29,7 @@
     "fingerprint-generator": "^2.1.82",
     "fingerprint-injector": "^2.1.82",
     "inngest": "^4.11.0",
+    "node-fetch": "^3.3.2",
     "playwright": "^1.61.1",
     "zod": "^4.1.0"
   },

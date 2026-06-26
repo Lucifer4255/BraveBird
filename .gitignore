@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.env
 *.log
 
 # Runtime artifacts
@@ -9,3 +8,5 @@ sessions/
 telemetry/
 playwright-report/
 test-results/
+DEMO.md
+config.bat
