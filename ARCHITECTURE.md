@@ -1,18 +1,21 @@
 # Browser Automation Worker — Architecture & Flow
 
 **Target:** Booking.com (real, bot-protected booking engine)
-**Stack:** TypeScript · Node · Playwright (`playwright` library, CDP-based, async)
-**Status:** Design for review
+**Stack:** TypeScript · Node · Playwright (Chromium) · Inngest (orchestration) · OpenRouter (gated AI) · Apify fingerprint-suite
+**Status:** Implemented — built for scale
 
 ---
 
 ## 1. Thesis
 
-We are building the **deterministic execution layer** — the "hands" — of a browser automation system: a resilient worker that logs in, persists its session, navigates a complex dynamic portal, and survives selector churn, network lag, and basic bot detection.
+This is the **deterministic execution layer** — the "hands" — of a browser automation system: a resilient worker that logs in, persists its session, navigates a complex dynamic portal, and survives selector churn, network lag, and aggressive bot detection. Built **for scale**: the headline concern is how bot detection and CAPTCHA are handled across a fleet of workers, not just one browser.
 
-An AI/agent layer (e.g. Playwright-MCP-style) is the "brain" that decides *what* to do. It is explicitly **out of scope** for this build and sits *on top* of this worker. The worker is the hard, unglamorous infrastructure an agent is useless without: an LLM will not hide `navigator.webdriver`, persist a session, recycle browser contexts without leaking memory, or capture telemetry on failure. Engineers build that. We build that.
+It splits into three cleanly-separated layers:
+- **`core/`** — the browser engine: one Chromium, N isolated contexts, stealth, self-healing locators, telemetry.
+- **`evasion/`** — the anti-bot subsystem: durable identities + real fingerprints, proxy pool, response classifier, CAPTCHA solver.
+- **`orchestration/`** — Inngest: paces jobs and does detect-and-react retries. The lower layers are orchestration-agnostic.
 
-> **Design principle:** *AI decides, deterministic executes.* The better the deterministic layer, the less the AI layer has to do.
+> **Design principle:** *AI decides, deterministic executes; avoid > solve.* Cheap, deterministic, reversible paths first (role-based locators, good fingerprints, pacing); expensive/non-deterministic ones (LLMs, CAPTCHA services, residential proxies) only as **gated last resorts**.
 
 ---
 
@@ -22,14 +25,16 @@ Every hurdle in the assignment maps to exactly one owner. Nothing is orphaned, n
 
 | Assignment hurdle | Owned by |
 |---|---|
-| Auth + session persistence | `workflows/booking.ts` + `storageState.json` |
+| Auth + session persistence | `evasion/identity.ts` (per-identity session) + `core/browserManager.ts` |
 | Deep nav + dynamic/dependent forms | `workflows/booking.ts` |
-| Stealth (webdriver, UA, headers) + proxy layer | `core/stealth.ts` |
-| Self-healing locators | `core/locators.ts` |
-| Async orchestration (queue + worker) | `queue/` + `worker/` |
+| Stealth (webdriver, UA, headers) | `core/stealth.ts` + `evasion/fingerprint.ts` |
+| Proxy abstraction | `evasion/proxyPool.ts` |
+| Self-healing locators | `core/locators.ts` + `core/aiResolver.ts` (gated AI) |
+| Async orchestration | `orchestration/` (Inngest) + `orchestration/jobRunner.ts` |
 | Browser reuse + context isolation | `core/browserManager.ts` |
-| Retry on transient failure | `core/retry.ts` |
-| Telemetry on hard failure (log + screenshot + HTML) | `core/telemetry.ts` |
+| Retry on transient failure | Inngest retries + `orchestration/jobRunner.ts` (detect-and-react) |
+| Telemetry on hard failure (log + screenshot + HTML + trace) | `core/telemetry.ts` |
+| **Bot detection + CAPTCHA at scale** | `evasion/` (identity rotation, proxy pool, classifier, captcha) |
 
 ---
 
@@ -37,20 +42,22 @@ Every hurdle in the assignment maps to exactly one owner. Nothing is orphaned, n
 
 ```mermaid
 flowchart TD
-    Job([Job]) --> Q["Job Queue<br/><i>in-proc async queue today · Redis/BullMQ later</i><br/><i>(hidden behind a Queue interface)</i>"]
-    Q -->|dequeue| W["Worker Pool<br/>(N async workers)"]
-    W <-->|get ctx| BM["BrowserManager<br/>1 Browser process<br/>N isolated Contexts"]
-    W -->|run context| WF["Workflow (site logic)<br/>login → navigate → fill form → extract"]
-    WF -->|uses| S[Stealth layer]
-    WF -->|uses| L["Locator (self-healing)"]
-    WF -->|uses| R[Retry wrapper]
-    WF -->|uses| T["Telemetry (on-fail)"]
+    Job([job event]) --> IN["Inngest function<br/><i>concurrency + throttle per site = pacing</i><br/><i>retries → detect-and-react</i>"]
+    IN -->|runJob| JR["jobRunner<br/>acquire → run → record → persist → release"]
+    JR <-->|acquire ctx| BM["BrowserManager<br/>1 Browser · N isolated Contexts<br/>each driven by a rotated identity (+proxy)"]
+    JR -->|run| WF["Workflow (site logic)<br/>open → login → navigate → extract"]
+    BM -->|uses| EV["evasion/<br/>identity · fingerprint · proxyPool · classifier · captcha"]
+    WF -->|uses| L["Locators (self-healing)"]
+    WF -->|uses| CL["Classifier (ok/challenge/captcha/blocked)"]
+    JR -->|on fail| T["Telemetry<br/>log + screenshot + html + trace"]
+    JR -->|block/captcha| BURN["burn identity + proxy<br/>→ retry fresh"]
 ```
 
 ### The seam that earns the grade
-- **`worker` knows nothing about Booking.com.** It only knows `Workflow.run(context)`.
-- **`workflow` knows nothing about queueing.** It only knows the page.
-- Swapping Booking → flights → a fallback site is **one new file in `workflows/`**. Nothing else moves.
+- **Orchestration knows nothing about Booking.com.** It only knows `runJob(job)`.
+- **The workflow knows nothing about orchestration.** It only knows the page.
+- **The evasion layer knows nothing about either.** Identities/proxies are injected.
+- Swapping Booking → flights → another site is **one new file in `workflows/`** + one `registry` entry. Nothing else moves. Swapping orchestration (Inngest ↔ in-process) leaves the lower layers untouched.
 
 ---
 
@@ -60,24 +67,30 @@ flowchart TD
 bravebird-automation/
 ├── src/
 │   ├── core/
-│   │   ├── browserManager.ts   # 1 browser, N isolated contexts, guaranteed cleanup
-│   │   ├── stealth.ts          # webdriver patch, UA, headers, proxy config layer
-│   │   ├── locators.ts         # self-healing: role → text → css → (gated) AI
-│   │   ├── retry.ts            # async retry wrapper + telemetry hook
-│   │   └── telemetry.ts        # on-fail: error log + screenshot + HTML + trace
-│   ├── queue/
-│   │   ├── base.ts             # Queue interface (swap in-proc ↔ Redis/BullMQ)
-│   │   └── memoryQueue.ts      # in-process async queue implementation
-│   ├── worker/
-│   │   └── worker.ts           # async worker loop (site-agnostic)
+│   │   ├── browserManager.ts   # 1 browser, N isolated contexts, identity+proxy, trace, cleanup
+│   │   ├── stealth.ts          # webdriver/WebGL patches, proxy parsing (identity-driven)
+│   │   ├── locators.ts         # self-healing: role→label→placeholder→text→css→(gated) AI
+│   │   ├── aiResolver.ts       # Tier-4: a11y-tree → OpenRouter → selector (gated, cached)
+│   │   └── telemetry.ts        # on-fail: error log + screenshot + HTML + trace + sink
+│   ├── evasion/                # the anti-bot subsystem (built for scale)
+│   │   ├── identity.ts         # durable personas: rotation, quota, health, retire, persist
+│   │   ├── fingerprint.ts      # real coherent fingerprints (generator+injector) + quality gate
+│   │   ├── profiles.ts         # curated fallback profiles (zero-dependency)
+│   │   ├── proxyPool.ts        # rotation, sticky-per-identity, geo-coherence, cooldown/retire
+│   │   ├── classifier.ts       # response → ok | challenge | captcha | blocked
+│   │   └── captcha/            # Strategy+Factory solver (math · vision · token-service · mock)
 │   ├── workflows/
-│   │   ├── base.ts             # Workflow interface: login() → navigate() → extract()
+│   │   ├── base.ts             # Workflow ABC: open → (login) → navigate → extract; BotWallError
 │   │   └── booking.ts          # Booking.com implementation
-│   ├── config.ts               # proxies, creds (env), UA pool
-│   └── main.ts                 # enqueue jobs, start workers
-├── package.json
-├── tsconfig.json
-└── README.md
+│   ├── orchestration/
+│   │   ├── inngest.ts          # client + function (concurrency/throttle/retries)
+│   │   ├── serve.ts            # Node HTTP server hosting the functions
+│   │   ├── jobRunner.ts        # runJob + detect-and-react; local retry loop
+│   │   └── registry.ts         # site → Workflow
+│   ├── scripts/                # runnable verifications + recon + live demo
+│   ├── config.ts               # env (zod-validated), single source of truth
+│   └── main.ts                 # zero-infra direct worker pool
+├── package.json · tsconfig.json · .env.example · README.md
 ```
 
 ---
@@ -110,9 +123,9 @@ Every interaction is **`find → wait → act → verify`**. Most bugs live in *
 
 **1. Stealth applied** *(before any navigation)* — UA, locale, viewport, timezone set on the context; init script patches `navigator.webdriver → undefined`, plugins, WebGL. Must run before the page's JS or detection wins the race.
 
-**2. Session check / login** — if `storage_state.json` exists, load it and verify ("is the account menu present?"); if valid, skip login. Otherwise log in, follow the post-login redirect, and snapshot `storage_state` for next run. *"Am I still logged in?" is a check, not an assumption.*
+**2. Session check / login** — the **identity owns its session**: `BrowserManager` loads the persona's `storageState` automatically; the workflow verifies ("is the account menu present?") and logs in only if stale, then `persistSession` snapshots it. *"Am I still logged in?" is a check, not an assumption.*
 
-**3. Navigate** — `goto(booking.com)`; **dismiss the consent banner** (it overlays the search box and steals clicks). If a bot wall appears instead of the page → fail path.
+**3. Navigate** — `goto(booking.com)`; the **classifier** checks the response (`blocked`/`captcha` → `BotWallError` → detect-and-react). **Dismiss consent + sign-in modals** — Booking's sign-in modal steals focus mid-type and kills autocomplete, so the destination step *dismisses the modal and re-types* (a few attempts) before treating it as a degraded variant.
 
 **4. Destination autocomplete** *(the hard one)* —
 ```
@@ -143,9 +156,9 @@ A cost-ordered cascade. Cheap and deterministic first; expensive and non-determi
 flowchart TD
     F["FIND 'the Search button'"] --> T1
     T1["Tier 1 · role/aria<br/>getByRole('button', name='Search')<br/>~1ms · deterministic"] -->|miss| T2
-    T2["Tier 2 · text/label<br/>getByText('Search')<br/>~1ms · deterministic"] -->|miss| T3
-    T3["Tier 3 · css/xpath<br/>'button.search-btn'<br/>~1ms · brittle"] -->|miss| T4
-    T4["Tier 4 · AI RESOLVER (gated, off by default)<br/>a11y-tree → LLM → selector<br/>~1–3s · $$ · non-deterministic"] -->|resolved| C
+    T2["Tiers 2–4 · label / placeholder / text<br/>getByLabel · getByPlaceholder · getByText<br/>~1ms · deterministic (stable for forms)"] -->|miss| T3
+    T3["Tier 5 · css/xpath<br/>'button.search-btn'<br/>~1ms · brittle"] -->|miss| T4
+    T4["Tier 6 · AI RESOLVER (gated, off by default)<br/>a11y-tree → LLM → selector<br/>~1–3s · $$ · non-deterministic"] -->|resolved| C
     C[("CACHE winning selector<br/>back to tiers 1–3")]
     C -.heal once, then deterministic.-> T1
 ```
@@ -156,25 +169,76 @@ flowchart TD
 
 ---
 
-## 7. Tradeoffs & real-world limits
+## 7. Bot detection & CAPTCHA at scale (the headline)
 
-- **Booking.com bot detection (DataDome/Akamai-class) is aggressive and can be flaky.** We treat the anti-bot wall as a *first-class failure*, not a bug to brute-force. A **deterministic fallback target** (SauceDemo / local static form) is wired into the same `Workflow` interface, so the engine is provable even when the wall is up. Handling the wall gracefully is a rubric requirement, not a cop-out.
-- **Stealth has a ceiling.** JS patches defeat static checks (`navigator.webdriver`) but not network-layer fingerprints (TLS/JA3, HTTP/2). Defeating those needs real browsers + residential proxies — hence the **proxy abstraction layer** in `stealth.ts`, even though we run direct by default.
-- **Queue starts in-process** (a small async queue / `Promise`-based handoff) for reviewability; the `Queue` interface lets it become Redis/BullMQ without touching workflow code. Right-sized, not over-built.
-- **One browser, many contexts.** Contexts cost ~50–100MB each, so concurrency is capped and every context is closed in `finally:` — the difference between a worker that runs for an hour and one that runs for a week.
-- **Prefer reading XHR JSON over scraping the DOM** where the site allows it: faster and far less brittle than parsing rendered cards.
+One stealthed browser fools static checks. **At scale you're caught by patterns** —
+three signals expose a bot farm, each with an owner.
+
+```mermaid
+flowchart LR
+    subgraph evasion
+      ID["Identity rotation<br/>coherent fingerprints,<br/>health, retire, persist"]
+      PX["Proxy pool<br/>rotate, geo-coherent,<br/>cooldown/retire"]
+      PA["Pacing (Inngest)<br/>concurrency+throttle<br/>per site"]
+    end
+    REQ([request]) --> ID --> PX --> PA --> SITE([target])
+    SITE -->|response| CLS["Classifier<br/>ok/challenge/captcha/blocked"]
+    CLS -->|blocked/captcha| RX["burn identity+proxy<br/>→ retry fresh / solve"]
+```
+
+- **Identical fingerprints → coherent identity rotation.** Real, statistically-distributed
+  fingerprints (Apify generator+injector), **quality-gated** to the plausible middle.
+  Identities are durable personas: sticky-per-session, daily quota, health-graded,
+  auto-retired when burned, persisted to disk.
+- **One IP → proxy pool.** Rotate, **sticky-per-identity**, **geo-coherent** (US persona →
+  US IP), cooldown + retire on blocks. Empty pool → direct.
+- **Bursts → pacing.** Inngest `concurrency` + `throttle` keyed per site — 1k workers
+  never burst one target.
+- **Caught anyway → detect-and-react.** The classifier flags a block; `jobRunner` burns
+  the identity + proxy; the retry runs on a **fresh persona + IP**.
+- **CAPTCHA: avoid > solve.** A Strategy+Factory solver (`math` · `vision` · `token-service`
+  · `mock`) handles the rare puzzle that slips through; off by default. Solving the puzzle
+  ≠ passing — modern systems score behavior, not pictures — so we invest in *not being
+  challenged*.
 
 ---
 
-## 8. Build order
+## 8. Tradeoffs & real-world limits
 
-1. `BrowserManager` + `stealth` — launch a stealthed context, verify against a `navigator.webdriver` detection page.
-2. `locators` self-healing layer (standalone, testable).
-3. `BookingWorkflow` happy path against the live site.
-4. `queue` + `worker` — wrap it async.
-5. `retry` + `telemetry` — cross-cutting robustness.
-6. README with the tradeoff write-up.
+- **Stealth has a ceiling.** JS patches defeat static checks (`navigator.webdriver`) but not
+  **network-layer** fingerprints (TLS/JA3, **IP reputation**). Booking (DataDome-class) scores
+  the IP heavily — from one un-proxied IP, ~30% of runs get a degraded variant. The architecture
+  is built for the fix (residential proxies + pacing); verifying it *live* needs a paid proxy.
+- **Anti-bot wall is a first-class failure**, not a bug to brute-force — `BotWallError` →
+  detect-and-react rotation, telemetry on the way out. (SauceDemo fallback was dropped per the
+  scale pivot: the founder asked for a real bot-protected target.)
+- **Orchestration is Inngest-native** for flow control (pacing) + durable retries; a zero-infra
+  in-process worker pool (`main.ts`) is kept for review. The lower layers are orchestration-agnostic.
+- **One browser, many contexts.** Contexts cost ~50–100MB; concurrency is capped and every
+  context is closed in `finally` — a worker that runs for a week, not an hour.
+- **What needs a paid account to verify live:** residential proxies (IP swap), 2Captcha
+  (token solving), OpenRouter (AI locator / vision CAPTCHA — cheap). Everything else is verified
+  offline via `npm run *:check`.
 
 ---
 
-*This document is the worker (the "hands"). The agent layer (the "brain") plugs in on top later — and is cheaper and more reliable precisely because this layer did the deterministic heavy lifting underneath.*
+## 9. Build order & verification
+
+Built bottom-up; each layer is independently runnable (`npm run *:check`, no accounts).
+
+| # | Layer | Verify |
+|---|---|---|
+| M1 | BrowserManager + stealth | `stealth:check` — webdriver hidden vs bot.sannysoft |
+| M2 | Self-healing locators (+ gated AI) | `locators:check`, `ai:check` |
+| M3 | Booking workflow (find→wait→act→verify) | `booking` — real Goa properties |
+| M4 | Identity + fingerprint rotation | `identity:check`, `fingerprint:check` |
+| M5 | Proxy pool | `proxy:check` — incl. a real proxy is applied |
+| M6 | Classifier + CAPTCHA (Strategy/Factory) | `captcha:check` — 7 response types |
+| M7 | Inngest orchestration + detect-and-react | `orchestration:check` — block → rotate → success |
+| M8 | Telemetry + README/ARCHITECTURE | `telemetry:check` — log+shot+html+trace |
+
+---
+
+*The "hands" are now backed by an evasion subsystem and an orchestration layer — so a
+"brain" (agent) plugging in on top is cheaper and more reliable, precisely because this
+layer does the deterministic, anti-bot, and pacing heavy lifting underneath.*

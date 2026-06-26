@@ -171,13 +171,18 @@ Upgraded from "rotate fingerprints" to "design durable identities" (per research
 - [x] **Verify:** `orchestrationCheck.ts` — bot wall → identity burned → retried fresh → success
       (healthy 3→2), function defined with flow control; `serve.ts` boots and `/api/inngest` → HTTP 200.
 
-### M8 — Telemetry + README + scale design writeup
-- [ ] `core/telemetry.ts` — on hard failure: `error.log` (exception + step + job id),
-      `screenshot.png`, `page.html`, Playwright **trace**. Context still closed in `finally`.
-- [ ] README + **the headline doc: "Bot detection & CAPTCHA at scale"** — architecture, the
-      pacing/proxy/fingerprint/CAPTCHA/detect-and-react design, what's built vs what needs paid
-      accounts, and tradeoffs (avoid > solve; stealth's JS-vs-TLS ceiling; cost per solve).
-- [ ] Init git, push to GitHub.
+### M8 — Telemetry + README + scale design writeup ✅ DONE
+- [x] `core/telemetry.ts` — on hard failure: `error.log` (exception + step + job + identity/proxy),
+      `screenshot.png`, `page.html`, Playwright **trace.zip**, into `telemetry/failures/<job>/`.
+      Captured while the context is open; still closed in `finally`. `BrowserManager` starts the
+      trace, telemetry saves it on failure / discards on success.
+- [x] Pluggable `TelemetrySink` (console-JSON default; Sentry/Datadog adapter seam — no code change
+      to capture). Verified: `telemetry:check` → all 4 artifacts written + structured event emitted.
+- [x] **README.md** — quick start (direct + Inngest), brief-by-point table, architecture diagram,
+      **"Bot detection & CAPTCHA at scale"**, all `npm run *:check`, tradeoffs + built-vs-paid table.
+- [x] **ARCHITECTURE.md** updated to the implemented system (Inngest, `evasion/`, new §7 scale section,
+      refreshed tradeoffs, build-order+verification table). `npm run *:check` scripts added.
+- [ ] Init git + push to GitHub (commits pending; repo not yet pushed).
 
 ---
 

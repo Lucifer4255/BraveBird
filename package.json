@@ -12,8 +12,16 @@
     "enqueue": "tsx src/scripts/enqueue.ts",
     "build": "tsc",
     "start": "node dist/main.js",
+    "booking": "tsx src/scripts/runBooking.ts",
     "stealth:check": "tsx src/scripts/stealthCheck.ts",
-    "locators:check": "tsx src/scripts/locatorCheck.ts"
+    "locators:check": "tsx src/scripts/locatorCheck.ts",
+    "ai:check": "tsx src/scripts/aiLocatorCheck.ts",
+    "identity:check": "tsx src/scripts/identityCheck.ts",
+    "fingerprint:check": "tsx src/scripts/fingerprintCheck.ts",
+    "proxy:check": "tsx src/scripts/proxyCheck.ts",
+    "captcha:check": "tsx src/scripts/captchaCheck.ts",
+    "orchestration:check": "tsx src/scripts/orchestrationCheck.ts",
+    "telemetry:check": "tsx src/scripts/telemetryCheck.ts"
   },
   "dependencies": {
     "@openrouter/sdk": "^0.12.79",
