@@ -1,5 +1,3 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import type { Page } from "playwright";
 import { resolve, resolveWithMeta } from "../core/locators.js";
 import { BotWallError, type Job, Workflow } from "./base.js";
@@ -34,10 +32,6 @@ export interface BookingResult {
 export class BookingWorkflow extends Workflow {
   readonly site = "booking";
 
-  sessionPath(_job: Job): string {
-    return "sessions/booking.json";
-  }
-
   /** Land on Booking, dismiss consent if present, detect a bot wall. */
   protected async open(page: Page, _job: Job): Promise<void> {
     await page.goto("https://www.booking.com/", {
@@ -47,12 +41,6 @@ export class BookingWorkflow extends Workflow {
 
     await this.assertNoBotWall(page);
     await this.dismissConsent(page);
-
-    // Persist whatever session we now have (cookies/consent/challenge token) so
-    // the next run starts warmer. page.context() gives us the owning context.
-    const path = this.sessionPath(_job);
-    mkdirSync(dirname(path), { recursive: true });
-    await page.context().storageState({ path });
   }
 
   /**

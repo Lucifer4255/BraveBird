@@ -1,10 +1,6 @@
 import { chromium } from "playwright";
-import { IdentityPool } from "../scale/identity.js";
-import {
-  applyStealthScripts,
-  buildContextOptions,
-  STEALTH_LAUNCH_ARGS,
-} from "../core/stealth.js";
+import { STEALTH_LAUNCH_ARGS } from "../core/stealth.js";
+import { FingerprintFactory } from "../evasion/fingerprint.js";
 
 /**
  * Headed "watch it live" demo for learning — NOT part of the worker.
@@ -21,9 +17,8 @@ async function main() {
     slowMo: 300, // ms pause between actions so the eye can follow
     args: STEALTH_LAUNCH_ARGS,
   });
-  const identity = new IdentityPool().acquire();
-  const context = await browser.newContext(buildContextOptions(identity));
-  await applyStealthScripts(context, identity); // same stealth we built in M1
+  const fingerprint = new FingerprintFactory().create();
+  const context = await fingerprint.createContext(browser); // coherent fingerprint + stealth
   const page = await context.newPage();
 
   console.log("→ 1/3  opening the bot detector — watch the window…");

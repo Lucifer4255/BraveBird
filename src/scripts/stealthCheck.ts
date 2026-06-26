@@ -44,11 +44,10 @@ async function main() {
     console.log("screenshot          : telemetry/stealth-check.png");
 
     // Only `webdriver === true` is the giveaway; real Chrome reports false/undefined.
-    const pass =
-      probe.webdriver !== true &&
-      !/headless/i.test(probe.userAgent) &&
-      probe.pluginCount > 0 &&
-      probe.languages.length >= 2;
+    // Universal bot tells. (plugins/languages are now set by the fingerprint
+    // injector from real data — realistic values, not our old fixed ones — so
+    // they're informational here, not pass/fail.)
+    const pass = probe.webdriver !== true && !/headless/i.test(probe.userAgent);
     console.log("\nRESULT:", pass ? "✅ PASS" : "❌ FAIL");
   } finally {
     // The whole point of M1: clean teardown, even on error.

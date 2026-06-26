@@ -1,6 +1,6 @@
 import type { BrowserContext, BrowserContextOptions } from "playwright";
 import { config } from "../config.js";
-import type { IdentityProfile } from "../scale/identity.js";
+import type { IdentityProfile } from "../evasion/profiles.js";
 
 /**
  * Stealth layer — makes an automated Chromium look like a normal human browser.

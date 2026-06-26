@@ -1,11 +1,7 @@
-import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";
-import { IdentityPool } from "../scale/identity.js";
-import {
-  applyStealthScripts,
-  buildContextOptions,
-  STEALTH_LAUNCH_ARGS,
-} from "../core/stealth.js";
+import { chromium } from "playwright";
+import { STEALTH_LAUNCH_ARGS } from "../core/stealth.js";
+import { FingerprintFactory } from "../evasion/fingerprint.js";
 
 /**
  * Recon for M3 — load the REAL Booking.com and report what's actually on the
@@ -23,9 +19,7 @@ async function main() {
     slowMo: headed ? 200 : 0,
     args: STEALTH_LAUNCH_ARGS,
   });
-  const identity = new IdentityPool().acquire();
-  const context = await browser.newContext(buildContextOptions(identity));
-  await applyStealthScripts(context, identity);
+  const context = await new FingerprintFactory().create().createContext(browser);
   const page = await context.newPage();
 
   console.log("→ navigating to booking.com …");

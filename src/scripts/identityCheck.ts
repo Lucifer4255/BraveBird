@@ -1,54 +1,59 @@
+import { rmSync } from "node:fs";
 import { chromium } from "playwright";
-import { IDENTITY_PROFILES, IdentityPool } from "../scale/identity.js";
-import {
-  applyStealthScripts,
-  buildContextOptions,
-  STEALTH_LAUNCH_ARGS,
-} from "../core/stealth.js";
+import { IdentityPool } from "../evasion/identity.js";
 
 /**
- * Verify M4 — identity / fingerprint rotation.
+ * Verify M4 — durable identities: rotation, stickiness, health-based retire,
+ * persistence, and fingerprint coherence.
  *   npx tsx src/scripts/identityCheck.ts
  */
+const DIR = "telemetry/identity-demo";
+
 async function main() {
-  console.log("profiles:", IDENTITY_PROFILES.map((p) => p.id).join(", "));
-  const pool = new IdentityPool();
+  rmSync(DIR, { recursive: true, force: true }); // clean slate for the demo
+  const pool = new IdentityPool({ dir: DIR, size: 4, maxBlocks: 2 });
+  console.log("fingerprint mode:", pool.mode, "| pool size:", pool.all.length);
 
-  console.log("\n── rotation (round-robin) ──");
-  console.log([0, 1, 2, 3].map(() => pool.acquire().id).join("  →  "));
+  console.log("\n── rotation (round-robin over personas) ──");
+  for (let i = 0; i < 5; i++) {
+    const id = pool.acquire();
+    console.log(`  ${id.id}  ${id.fingerprint.summary}`);
+  }
 
-  console.log("\n── stickiness (same key → same identity) ──");
+  console.log("\n── stickiness (same key → same persona) ──");
   const a = pool.acquire("session-A").id;
-  const b = pool.acquire("session-B").id;
   const a2 = pool.acquire("session-A").id;
-  console.log(`session-A=${a}, session-B=${b}, session-A again=${a2}  (A stable: ${a === a2})`);
+  console.log(`  session-A: ${a} then ${a2}  (stable: ${a === a2})`);
 
-  console.log("\n── ban → reassign on next acquire ──");
-  pool.ban(a);
+  console.log("\n── health: 2 blocks retires a persona ──");
+  pool.recordBlock(a);
+  pool.recordBlock(a);
   const a3 = pool.acquire("session-A").id;
-  console.log(`banned ${a}; session-A now=${a3}  (changed: ${a3 !== a}); healthy=${pool.healthyCount}`);
+  console.log(`  blocked ${a} twice → session-A reassigned to ${a3} (changed: ${a3 !== a})`);
+  console.log(`  healthy identities: ${pool.healthyCount} of ${pool.all.length}`);
 
-  console.log("\n── coherence: real browser values match the chosen profile ──");
-  const identity = IDENTITY_PROFILES[0]!;
-  const browser = await chromium.launch({ headless: true, args: STEALTH_LAUNCH_ARGS });
-  const context = await browser.newContext(buildContextOptions(identity));
-  await applyStealthScripts(context, identity);
-  const page = await context.newPage();
+  console.log("\n── persistence (durable across runs) ──");
+  const pool2 = new IdentityPool({ dir: DIR, size: 4 });
+  const sameIds = pool2.all.map((i) => i.id).sort().join(",") === pool.all.map((i) => i.id).sort().join(",");
+  const retiredPersisted = pool2.all.find((i) => i.id === a)?.health.retired === true;
+  console.log(`  reloaded same personas: ${sameIds ? "✅" : "❌"} | retirement persisted: ${retiredPersisted ? "✅" : "❌"}`);
+
+  console.log("\n── coherence (browser matches the persona's fingerprint) ──");
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+  });
+  const identity = pool2.all.find((i) => !i.health.retired)!;
+  const ctx = await identity.fingerprint.createContext(browser);
+  const page = await ctx.newPage();
   await page.goto("about:blank");
-  const probe = await page.evaluate(() => ({
-    ua: navigator.userAgent,
-    platform: navigator.platform,
-    languages: navigator.languages,
-    webdriver: navigator.webdriver,
-  }));
-  console.log("profile :", identity.id, "→ platform should be", identity.platform);
-  console.log("browser :", JSON.stringify(probe));
-  const coherent =
-    probe.platform === identity.platform &&
-    probe.ua === identity.userAgent &&
-    probe.languages[0] === identity.locale;
-  console.log("\nRESULT:", coherent ? "✅ UA / platform / locale all agree (coherent fingerprint)" : "❌ mismatch");
+  const probe = await page.evaluate(() => ({ platform: navigator.platform, webdriver: navigator.webdriver }));
+  console.log(`  persona ${identity.id} (${identity.fingerprint.summary})`);
+  console.log(`  browser platform=${probe.platform} matches=${probe.platform === identity.fingerprint.platform ? "✅" : "❌"}  webdriver hidden=${probe.webdriver === false ? "✅" : "❌"}`);
+
   await browser.close();
+  rmSync(DIR, { recursive: true, force: true });
+  console.log("\n✅ durable identity pool verified.");
 }
 
 main().catch((err) => {

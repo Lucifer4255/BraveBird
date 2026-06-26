@@ -34,9 +34,6 @@ export abstract class Workflow {
   /** Stable site key the worker matches a job against (e.g. "booking"). */
   abstract readonly site: string;
 
-  /** Where this job's session (cookies/storage) is persisted on disk. */
-  abstract sessionPath(job: Job): string;
-
   /**
    * Land on the site: navigate to the entry URL, dismiss consent banners, and
    * detect a bot wall. Runs first so the session check below has a real page to
@@ -61,9 +58,9 @@ export abstract class Workflow {
   protected abstract extract(page: Page, job: Job): Promise<unknown>;
 
   /**
-   * The fixed skeleton. Note the order and the session discipline: we only log
-   * in when the loaded session isn't valid, and we re-snapshot storageState
-   * right after a fresh login so the NEXT run can skip it.
+   * The fixed skeleton. Session persistence is NOT the workflow's job — the
+   * identity owns its session (loaded by BrowserManager, saved via
+   * `persistSession`). Here we just check login state and log in if stale.
    */
   async run(context: BrowserContext, job: Job): Promise<unknown> {
     const page = await context.newPage();
@@ -74,9 +71,6 @@ export abstract class Workflow {
     // 2. Session check, not assumption. Log in only if the loaded session is stale.
     if (!(await this.isLoggedIn(page))) {
       await this.login(page, job);
-      // Persist the freshly authenticated session for next time.
-      // indexedDB:true captures sites that stash auth there, not just cookies.
-      await context.storageState({ path: this.sessionPath(job), indexedDB: true });
     }
 
     // 3. Deep-navigate + fill the form. 4. Extract.
