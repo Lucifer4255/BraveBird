@@ -3,6 +3,7 @@ import {
   CaptchaSolverRegistry,
   type CaptchaChallenge,
   createCaptchaRegistry,
+  handleCaptcha,
   MathStrategy,
   MockStrategy,
 } from "../evasion/captcha/index.js";
@@ -61,8 +62,24 @@ async function main() {
   }
   console.log(`  empty registry → throws: ${threw ? "✅" : "❌"}`);
 
-  const pass = allPass && mathOk && gridOk && threw;
-  console.log(`\nRESULT: ${pass ? "✅ classifier + strategy/factory verified" : "❌ failed"}`);
+  console.log("\n── live wiring: detected captcha → handleCaptcha → strategy ──");
+  const wireBrowser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const wirePage = await wireBrowser.newPage();
+  await wirePage.setContent(
+    `<body><div class="g-recaptcha" data-sitekey="6Lc_demo"></div><textarea id="g-recaptcha-response"></textarea></body>`,
+  );
+  const detected = await classify(wirePage);
+  const solverReg = new CaptchaSolverRegistry().register(new MockStrategy());
+  const solved = await handleCaptcha(wirePage, detected.captcha!, solverReg); // mock solves + injects
+  const injectedToken = await wirePage.locator("#g-recaptcha-response").inputValue().catch(() => "");
+  const rotateReg = new CaptchaSolverRegistry(); // nothing configured → can't solve
+  const rotates = (await handleCaptcha(wirePage, detected.captcha!, rotateReg)) === false;
+  await wireBrowser.close();
+  console.log(`  configured → solved + token injected: ${solved && injectedToken.startsWith("mock-") ? "✅" : "❌"}`);
+  console.log(`  none configured → returns false (rotate): ${rotates ? "✅" : "❌"}`);
+
+  const pass = allPass && mathOk && gridOk && threw && solved && rotates && injectedToken.startsWith("mock-");
+  console.log(`\nRESULT: ${pass ? "✅ classifier + strategy/factory + live wiring verified" : "❌ failed"}`);
   if (!pass) process.exit(1);
 }
 

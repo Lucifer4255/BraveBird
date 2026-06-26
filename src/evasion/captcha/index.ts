@@ -1,4 +1,5 @@
 export * from "./types.js";
+export { handleCaptcha } from "./handle.js";
 export { CaptchaSolverRegistry, createCaptchaRegistry } from "./registry.js";
 export { MathStrategy } from "./strategies/math.js";
 export { MockStrategy } from "./strategies/mock.js";

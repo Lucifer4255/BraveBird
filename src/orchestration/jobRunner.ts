@@ -15,6 +15,9 @@ export async function runJob(bm: BrowserManager, job: Job): Promise<unknown> {
   const workflow = getWorkflow(job.site);
   const context = await bm.acquireContext({ sessionKey: job.id });
 
+  const identity = bm.identityFor(context);
+  console.log(`  · [${job.site}:${job.id}] identity ${identity?.id} (${identity?.fingerprint.summary})`);
+
   try {
     const result = await workflow.run(context, job);
     bm.recordSuccess(context);

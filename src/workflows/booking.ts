@@ -1,5 +1,10 @@
 import type { Page } from "playwright";
 import { resolve, resolveWithMeta } from "../core/locators.js";
+import {
+  type CaptchaSolverRegistry,
+  createCaptchaRegistry,
+  handleCaptcha,
+} from "../evasion/captcha/index.js";
 import { classify } from "../evasion/classifier.js";
 import { BotWallError, type Job, Workflow } from "./base.js";
 
@@ -60,21 +65,29 @@ function nightsBetween(checkin: string, checkout: string): number {
 export class BookingWorkflow extends Workflow {
   readonly site = "booking";
 
-  /** Land on Booking, classify the response, dismiss consent. */
+  /** Solver registry, assembled from config (cheapest-first; off → avoid > solve). */
+  private readonly captcha: CaptchaSolverRegistry = createCaptchaRegistry();
+
+  /** Land on Booking, classify the response, solve-or-rotate, dismiss consent. */
   protected async open(page: Page, _job: Job): Promise<void> {
     const response = await page.goto("https://www.booking.com/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
 
-    // First-class anti-bot handling: a block/captcha is a recognised failure the
-    // worker reacts to (burn identity+proxy, retry fresh), not a bug to push through.
+    // First-class anti-bot handling.
     const result = await classify(page, response);
     if (result.verdict === "blocked") {
       throw new BotWallError(`Booking blocked: ${result.reason}`);
     }
-    if (result.verdict === "captcha") {
-      throw new BotWallError(`Booking captcha (${result.captcha?.kind}): ${result.reason}`);
+    if (result.verdict === "captcha" && result.captcha) {
+      // Try to SOLVE via the strategy registry; only rotate if nothing solves it
+      // (avoid > solve: with no provider configured, this returns false → rotate).
+      const solved = await handleCaptcha(page, result.captcha, this.captcha);
+      if (!solved) {
+        throw new BotWallError(`Booking captcha (${result.captcha.kind}) unsolved → rotate`);
+      }
+      // solved → token injected; fall through and continue.
     }
     // "challenge" usually auto-passes; "ok" proceeds.
 
