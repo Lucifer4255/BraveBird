@@ -158,15 +158,18 @@ Upgraded from "rotate fingerprints" to "design durable identities" (per research
       blocked/challenge); mock solver returns a token; `createSolver()` → undefined when disabled.
       No regression (Booking still returns 25 hotels).
 
-### M7 — Inngest-native orchestration
-- [ ] `src/orchestration/inngest.ts` — Inngest client + `automation/job.requested` function running
-      `workflow.run`. Flow control: `concurrency` + `throttle`/`rateLimit` keyed per **proxy+domain**
-      (= human-like pacing), step retries.
-- [ ] **Detect-and-react retry:** block/captcha → `banIdentity` + `reportBlocked(proxy)` → Inngest
-      retry on a fresh identity/proxy. Solve CAPTCHA inline when avoid fails.
-- [ ] Keep a tiny in-memory/direct runner (today's `runBooking`-style) for zero-infra local runs.
-- [ ] **Verify:** `inngest-cli dev` + send N events → functions run with capped concurrency, isolated
-      sessions, no leaked contexts; a simulated block triggers identity rotation + retry.
+### M7 — Inngest-native orchestration ✅ DONE
+- [x] `src/orchestration/` — `registry.ts` (site→Workflow), `jobRunner.ts` (`runJob` =
+      acquire→run→record→persist→release; `runJobWithRetries` local loop), `inngest.ts` (client +
+      `runAutomationJob` function: `concurrency`+`throttle` keyed per `event.data.site` = pacing,
+      `retries: 3`; auto dev-mode), `serve.ts` (Node HTTP serve for the dev server).
+- [x] **Detect-and-react:** `runJob` catches `BotWallError` → `recordBlock` burns identity + proxy →
+      retry (Inngest's or the local loop's) acquires a FRESH persona+IP. (Identity retirement persists
+      to disk, so it survives across distributed workers too.)
+- [x] Zero-infra **direct runner** `src/main.ts` (`npm run dev`) — bounded-concurrency in-process pool.
+      `npm run worker` serves Inngest; `npm run enqueue` sends events. BullMQ/ioredis deps removed.
+- [x] **Verify:** `orchestrationCheck.ts` — bot wall → identity burned → retried fresh → success
+      (healthy 3→2), function defined with flow control; `serve.ts` boots and `/api/inngest` → HTTP 200.
 
 ### M8 — Telemetry + README + scale design writeup
 - [ ] `core/telemetry.ts` — on hard failure: `error.log` (exception + step + job id),

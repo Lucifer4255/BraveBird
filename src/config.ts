@@ -26,6 +26,13 @@ const EnvSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().positive().max(16).default(2),
   HEADLESS: boolish(true),
 
+  // Inngest worker HTTP port (where functions are served for the dev server).
+  PORT: z.coerce.number().int().positive().default(3939),
+
+  // Telemetry — capture forensics (log + screenshot + html + trace) on hard failure.
+  TELEMETRY_ENABLED: boolish(true),
+  TELEMETRY_DIR: z.string().default("telemetry"),
+
   // Stealth / proxy
   PROXY_URL: z.string().optional().transform((v) => (v ? v : undefined)),
   // Proxy pool: comma-separated entries. Each entry is a URL, optionally with
@@ -78,6 +85,13 @@ export const config = {
   },
   worker: {
     concurrency: env.WORKER_CONCURRENCY,
+  },
+  server: {
+    port: env.PORT,
+  },
+  telemetry: {
+    enabled: env.TELEMETRY_ENABLED,
+    dir: env.TELEMETRY_DIR,
   },
   browser: {
     headless: env.HEADLESS,

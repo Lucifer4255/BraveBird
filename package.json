@@ -8,6 +8,8 @@
   },
   "scripts": {
     "dev": "tsx src/main.ts",
+    "worker": "tsx src/orchestration/serve.ts",
+    "enqueue": "tsx src/scripts/enqueue.ts",
     "build": "tsc",
     "start": "node dist/main.js",
     "stealth:check": "tsx src/scripts/stealthCheck.ts",
@@ -15,11 +17,10 @@
   },
   "dependencies": {
     "@openrouter/sdk": "^0.12.79",
-    "bullmq": "^5.66.0",
     "dotenv": "^17.2.0",
     "fingerprint-generator": "^2.1.82",
     "fingerprint-injector": "^2.1.82",
-    "ioredis": "^5.9.0",
+    "inngest": "^4.11.0",
     "playwright": "^1.61.1",
     "zod": "^4.1.0"
   },

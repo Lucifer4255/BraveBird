@@ -112,33 +112,57 @@ export class BookingWorkflow extends Workflow {
       },
       { timeout: 20_000 }, // search box renders after domcontentloaded
     );
-    // ACT — type to fire the debounced autocomplete XHR.
-    await input.locator.click();
-    await input.locator.fill(destination);
-
-    // WAIT — for the OPTIONS to render, never sleep().
+    // Booking pops a sign-in / Genius modal that steals focus mid-type, killing
+    // the autocomplete. The human fix (observed): close the modal and type again.
+    // So: type → if no suggestions, dismiss the modal and RETRY a few times.
     const options = page.locator("[data-testid='autocomplete-result']");
-    try {
-      await options.first().waitFor({ state: "visible", timeout: 10_000 });
-      // ACT — choose the first suggestion (best match for the typed text).
-      await options.first().click();
-    } catch {
-      // Autocomplete didn't render — Booking still searches the typed text.
-      // Press Enter as a graceful fallback rather than failing the whole job.
-      await input.locator.press("Enter").catch(() => {});
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.dismissModals(page);
+
+      // ACT — real keystrokes (fill() in one shot often doesn't trip the
+      // keystroke-debounced autocomplete).
+      await input.locator.click().catch(() => {});
+      await input.locator.fill("").catch(() => {});
+      await input.locator.pressSequentially(destination, { delay: 60 });
+
+      try {
+        // WAIT — for the OPTIONS to render, never sleep().
+        await options.first().waitFor({ state: "visible", timeout: 8_000 });
+        // Prefer the suggestion matching the destination text, else the first.
+        // Clicking a suggestion is what registers Booking's dest_id.
+        const matching = options.filter({ hasText: new RegExp(destination, "i") }).first();
+        const target = (await matching.count()) > 0 ? matching : options.first();
+        await target.click();
+        return; // VERIFY — a clicked suggestion is the success signal.
+      } catch {
+        // No suggestions — a modal likely grabbed focus. Close it and try again.
+        await this.dismissModals(page);
+      }
     }
 
-    // VERIFY — the input now holds a destination value. Poll briefly: Booking
-    // often writes the canonical name ("Goa, India") a beat after the option click.
-    let value = "";
-    for (let i = 0; i < 8; i++) {
-      value = await input.locator.inputValue().catch(() => "");
-      if (value) break;
-      await page.waitForTimeout(250);
+    // Still nothing after dismiss+retry — the degraded/bot-detected variant.
+    // Treat as a soft block so detect-and-react ROTATES identity+proxy.
+    throw new BotWallError(
+      `destination autocomplete unavailable for "${destination}" after retries (degraded variant)`,
+    );
+  }
+
+  /** Close any sign-in / Genius / promo modal that can intercept the search box. */
+  private async dismissModals(page: Page): Promise<void> {
+    const closers = [
+      'button[aria-label*="Dismiss" i]',
+      'button[aria-label*="Close" i]',
+      '[role="dialog"] button[aria-label*="dismiss" i]',
+      '[role="dialog"] [aria-label*="Close" i]',
+    ];
+    for (const selector of closers) {
+      const btn = page.locator(selector).first();
+      if (await btn.count().catch(() => 0)) {
+        await btn.click({ timeout: 1_500 }).catch(() => {});
+      }
     }
-    if (!value) {
-      throw new Error(`destination did not register a value for "${destination}"`);
-    }
+    // Escape closes most Booking modals as a fallback.
+    await page.keyboard.press("Escape").catch(() => {});
   }
 
   private async pickDates(page: Page, checkin: string, checkout: string): Promise<void> {

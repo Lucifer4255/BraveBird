@@ -71,6 +71,12 @@ export class BrowserManager {
       proxyUrl,
     });
 
+    // Record a trace from the start; telemetry SAVES it on failure, else it's
+    // discarded on release. (Captures screenshots + DOM snapshots for replay.)
+    if (config.telemetry.enabled) {
+      await context.tracing.start({ screenshots: true, snapshots: true }).catch(() => {});
+    }
+
     this.contexts.add(context);
     this.contextIdentity.set(context, identity);
     if (proxyUrl) this.contextProxy.set(context, proxyUrl);
@@ -115,10 +121,17 @@ export class BrowserManager {
     return this.contextIdentity.get(context);
   }
 
+  proxyFor(context: BrowserContext): string | undefined {
+    return this.contextProxy.get(context);
+  }
+
   async releaseContext(context: BrowserContext): Promise<void> {
     this.contexts.delete(context);
     this.contextIdentity.delete(context);
     this.contextProxy.delete(context);
+    // Discard the trace if it wasn't already saved by telemetry on failure
+    // (double-stop just throws and is ignored).
+    await context.tracing.stop().catch(() => {});
     await context.close().catch(() => {});
   }
 
