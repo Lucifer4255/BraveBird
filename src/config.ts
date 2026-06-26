@@ -41,6 +41,10 @@ const EnvSchema = z.object({
   SAUCE_USERNAME: z.string().default("standard_user"),
   SAUCE_PASSWORD: z.string().default("secret_sauce"),
 
+  // CAPTCHA solving (avoid > solve; off by default).
+  CAPTCHA_PROVIDER: z.enum(["none", "mock", "2captcha"]).default("none"),
+  CAPTCHA_API_KEY: z.string().optional().transform((v) => (v ? v : undefined)),
+
   // Tier-4 AI locator resolver (gated off by default).
   // Routed through OpenRouter via the official `@openrouter/sdk` client — it knows
   // its own endpoint, so no base URL needed. Cheap model by default; override freely.
@@ -80,6 +84,10 @@ export const config = {
     proxyUrl: env.PROXY_URL,
     proxyUrls: env.PROXY_URLS,
     userAgents: USER_AGENTS,
+  },
+  captcha: {
+    provider: env.CAPTCHA_PROVIDER,
+    apiKey: env.CAPTCHA_API_KEY,
   },
   credentials: {
     booking:

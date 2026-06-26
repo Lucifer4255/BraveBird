@@ -141,12 +141,22 @@ Upgraded from "rotate fingerprints" to "design durable identities" (per research
       is genuinely applied). No regression (stealth still passes direct). Live IP swap needs a paid
       residential proxy.
 
-### M6 — Block classifier + CAPTCHA solver
-- [ ] `src/evasion/classifier.ts` — classify a response: `ok | challenge | captcha | blocked`
-      (status + body markers + headers e.g. DataDome/Cloudflare/`server` hints).
-- [ ] `src/evasion/captcha/` — `CaptchaSolver` interface; a real provider client (2Captcha/CapSolver
-      HTTP API for reCAPTCHA/hCaptcha/Turnstile/DataDome); a `MockSolver` for tests. Avoid-first
-      philosophy documented. Live solving needs paid credits.
+### M6 — Block classifier + CAPTCHA solver ✅ DONE
+- [x] `src/evasion/classifier.ts` — `classify(page, response)` → `ok | challenge | captcha | blocked`
+      from status (403/429), body markers ("Access Denied", "Just a moment…"), `server` header
+      (DataDome), and locator-based CAPTCHA detection (reCAPTCHA/hCaptcha/Turnstile/DataDome) with
+      sitekey extraction. (Locators, not `page.evaluate` — dodges the esbuild `__name` trap.)
+- [x] `src/evasion/captcha/` — **Strategy + Factory** design: `CaptchaStrategy` interface
+      (`canHandle`/`solve`), strategies `MathStrategy` (compute), `VisionGridStrategy` (image-grid via
+      OpenRouter vision), `TokenServiceStrategy` (+ `TwoCaptchaService`, real createTask/poll),
+      `MockStrategy` (catch-all); `CaptchaSolverRegistry` + `createCaptchaRegistry()` factory (assembles
+      from config, cheapest-first). Solution shapes: `token`/`text`/`tiles`. New captcha type = new
+      strategy + one `register()`. `CAPTCHA_PROVIDER`/`CAPTCHA_API_KEY`; default `none` (avoid > solve).
+- [x] Wired into `booking.open()` — classify the landing response, throw `BotWallError` on
+      blocked/captcha (first-class failure the worker reacts to).
+- [x] **Verify:** `captchaCheck.ts` — classifier correct on all 7 cases (ok/4 captchas+sitekeys/
+      blocked/challenge); mock solver returns a token; `createSolver()` → undefined when disabled.
+      No regression (Booking still returns 25 hotels).
 
 ### M7 — Inngest-native orchestration
 - [ ] `src/orchestration/inngest.ts` — Inngest client + `automation/job.requested` function running

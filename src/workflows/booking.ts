@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import { resolve, resolveWithMeta } from "../core/locators.js";
+import { classify } from "../evasion/classifier.js";
 import { BotWallError, type Job, Workflow } from "./base.js";
 
 /**
@@ -32,14 +33,24 @@ export interface BookingResult {
 export class BookingWorkflow extends Workflow {
   readonly site = "booking";
 
-  /** Land on Booking, dismiss consent if present, detect a bot wall. */
+  /** Land on Booking, classify the response, dismiss consent. */
   protected async open(page: Page, _job: Job): Promise<void> {
-    await page.goto("https://www.booking.com/", {
+    const response = await page.goto("https://www.booking.com/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
 
-    await this.assertNoBotWall(page);
+    // First-class anti-bot handling: a block/captcha is a recognised failure the
+    // worker reacts to (burn identity+proxy, retry fresh), not a bug to push through.
+    const result = await classify(page, response);
+    if (result.verdict === "blocked") {
+      throw new BotWallError(`Booking blocked: ${result.reason}`);
+    }
+    if (result.verdict === "captcha") {
+      throw new BotWallError(`Booking captcha (${result.captcha?.kind}): ${result.reason}`);
+    }
+    // "challenge" usually auto-passes; "ok" proceeds.
+
     await this.dismissConsent(page);
   }
 
@@ -219,17 +230,6 @@ export class BookingWorkflow extends Workflow {
   }
 
   // ── guards / banners ─────────────────────────────────────────────────────
-
-  private async assertNoBotWall(page: Page): Promise<void> {
-    const title = (await page.title().catch(() => "")).toLowerCase();
-    const bodyText = (await page.locator("body").innerText().catch(() => "")).slice(0, 400);
-    const blocked =
-      /are you a robot|verify you are human|captcha|access denied|unusual traffic/i.test(bodyText) ||
-      /access denied|blocked/i.test(title);
-    if (blocked) {
-      throw new BotWallError("Booking.com presented a bot wall / challenge page.");
-    }
-  }
 
   private async dismissConsent(page: Page): Promise<void> {
     // Consent may or may not appear (recon saw none). Try briefly, never block.
