@@ -1,12 +1,10 @@
 import { BrowserManager } from "../core/browserManager.js";
 import type { Job } from "../workflows/base.js";
-import { BookingWorkflow } from "../workflows/booking.js";
+import { type BookingResult, BookingWorkflow } from "../workflows/booking.js";
 
 /**
- * Run a single Booking.com job end-to-end (manual M3 verification).
- *
- *   npx tsx src/scripts/runBooking.ts
- *   HEADLESS=false npx tsx src/scripts/runBooking.ts
+ * Find the best-rated, under-budget hotel for a stay (fetch price — does NOT book).
+ *   npm run booking
  */
 async function main() {
   const bm = new BrowserManager();
@@ -14,28 +12,46 @@ async function main() {
 
   const wf = new BookingWorkflow();
   const job: Job = {
-    id: "booking-demo-1",
+    id: "find-hotel-goa",
     site: "booking",
-    params: { destination: "Goa", checkin: "2026-06-26", checkout: "2026-06-28", adults: 2 },
+    params: {
+      destination: "Goa",
+      checkin: "2026-06-26",
+      checkout: "2026-06-29", // 3 nights
+      adults: 3,
+      maxTotalPrice: 15_000, // ₹ total for the stay
+      minRating: 8.0,
+      currency: "INR",
+    },
   };
+  const p = job.params as { destination: string; adults: number; maxTotalPrice: number; minRating: number };
 
-  // Sticky identity per job — its persona + session are loaded automatically.
   const ctx = await bm.acquireContext({ sessionKey: job.id });
-  const identity = bm.identityFor(ctx);
-  console.log(`identity: ${identity?.id} (${identity?.fingerprint.summary})`);
+  console.log(`identity : ${bm.identityFor(ctx)?.fingerprint.summary}`);
+  console.log(`searching: ${p.destination} · 3 nights · ${p.adults} adults · rating ≥ ${p.minRating} · budget ≤ ₹${p.maxTotalPrice.toLocaleString("en-IN")}`);
 
   try {
-    const result = await wf.run(ctx, job);
+    const r = (await wf.run(ctx, job)) as BookingResult;
     bm.recordSuccess(ctx);
-    await bm.persistSession(ctx); // persona accumulates session history
-    console.log("\n✅ RESULT:\n" + JSON.stringify(result, null, 2));
+    await bm.persistSession(ctx);
+
+    console.log(`\nscanned ${r.scanned} hotels · ${r.qualified} matched (rating ≥ ${r.minRating}, ≤ ₹${r.budget.toLocaleString("en-IN")})`);
+    if (r.best) {
+      console.log(`\n🏆 BEST: ${r.best.name}`);
+      console.log(`        rating ${r.best.rating}/10 · ${r.best.priceText} total · ${r.nights} nights · ${r.adults} adults`);
+      if (r.top.length > 1) {
+        console.log(`\nrunners-up:`);
+        for (const h of r.top.slice(1)) console.log(`  - ${h.name} (${h.rating}/10) ${h.priceText}`);
+      }
+    } else {
+      console.log(`\nNo hotel matched rating ≥ ${r.minRating} under ₹${r.budget.toLocaleString("en-IN")}. Loosen the budget or rating.`);
+    }
   } catch (err) {
     if ((err as Error)?.name === "BotWallError") bm.recordBlock(ctx);
     throw err;
   } finally {
     await bm.releaseContext(ctx);
     await bm.stop();
-    console.log(`\nopen contexts after teardown: ${bm.openContextCount} (want 0)`);
   }
 }
 

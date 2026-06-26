@@ -21,13 +21,40 @@ export interface BookingParams {
   checkin: string; // YYYY-MM-DD
   checkout: string; // YYYY-MM-DD
   adults: number;
+  /** Filter: keep hotels whose total stay price ≤ this (in `currency`). */
+  maxTotalPrice: number;
+  /** Filter: keep hotels rated ≥ this (Booking review score, out of 10). */
+  minRating: number;
+  /** Booking currency to price + compare in (default INR). */
+  currency?: string;
+}
+
+export interface Hotel {
+  name: string;
+  rating: number | null; // /10
+  price: number | null; // total for the stay, in `currency`
+  priceText: string;
 }
 
 export interface BookingResult {
   destination: string;
+  nights: number;
+  adults: number;
+  currency: string;
+  budget: number;
+  minRating: number;
+  scanned: number;
+  qualified: number;
+  /** Best match = highest-rated under budget (tie-break cheapest). null if none. */
+  best: Hotel | null;
+  top: Hotel[];
   resultsUrl: string;
-  propertyCount: number;
-  sample: string[];
+}
+
+/** Nights between two YYYY-MM-DD dates (≥ 1). */
+function nightsBetween(checkin: string, checkout: string): number {
+  const ms = new Date(checkout).getTime() - new Date(checkin).getTime();
+  return Math.max(1, Math.round(ms / 86_400_000));
 }
 
 export class BookingWorkflow extends Workflow {
@@ -71,30 +98,86 @@ export class BookingWorkflow extends Workflow {
   protected async navigate(page: Page, job: Job): Promise<void> {
     const p = job.params as unknown as BookingParams;
 
+    // Dynamic-form interaction: destination autocomplete (the lazy XHR dropdown).
     await this.fillDestination(page, p.destination);
-    await this.pickDates(page, p.checkin, p.checkout);
-    await this.setAdults(page, p.adults);
     await this.submitSearch(page);
+
+    // Dates / occupancy / currency are set RELIABLY via Booking's own search
+    // params. The calendar + occupancy stepper are flaky under bot detection and
+    // `#group_adults` is a hidden range input — not worth fighting when the URL
+    // does it deterministically (and prices only render once dates are set).
+    await this.reconcileResultsUrl(page, p);
   }
 
-  /** Read structured results (prefer DOM cards; could also read the results XHR). */
+  /** Rebuild the results URL with the exact stay/occupancy/currency, then reload. */
+  private async reconcileResultsUrl(page: Page, p: BookingParams): Promise<void> {
+    const current = new URL(page.url());
+    const target = new URL("https://www.booking.com/searchresults.html");
+    target.searchParams.set("ss", p.destination);
+
+    // Only carry the submitted dest_id if it actually resolved to OUR destination
+    // — otherwise Booking defaulted (e.g. to the datacenter IP's city), and we let
+    // the `ss` text re-resolve instead.
+    const submittedSs = (current.searchParams.get("ss") ?? "").toLowerCase();
+    if (submittedSs.includes(p.destination.toLowerCase())) {
+      const destId = current.searchParams.get("dest_id");
+      const destType = current.searchParams.get("dest_type");
+      if (destId) target.searchParams.set("dest_id", destId);
+      if (destType) target.searchParams.set("dest_type", destType);
+    }
+
+    target.searchParams.set("checkin", p.checkin);
+    target.searchParams.set("checkout", p.checkout);
+    target.searchParams.set("group_adults", String(p.adults));
+    target.searchParams.set("no_rooms", "1");
+    target.searchParams.set("group_children", "0");
+    target.searchParams.set("selected_currency", p.currency ?? "INR");
+    await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 60_000 });
+  }
+
+  /**
+   * Extract each property card (name · rating · total price), then FILTER by the
+   * rating floor + budget cap and RANK (highest rating under budget, cheapest as
+   * tie-break). The filtering is our own business logic over scraped data — not
+   * Booking's filter UI.
+   */
   protected async extract(page: Page, job: Job): Promise<BookingResult> {
     const p = job.params as unknown as BookingParams;
+    const currency = p.currency ?? "INR";
+    const nights = nightsBetween(p.checkin, p.checkout);
 
     const cards = page.locator("[data-testid='property-card']");
     await cards.first().waitFor({ state: "visible", timeout: 30_000 }).catch(() => {});
-
     const count = await cards.count();
-    const sample = await cards
-      .locator("[data-testid='title']")
-      .allInnerTexts()
-      .catch(() => []);
+
+    const hotels: Hotel[] = [];
+    for (let i = 0; i < Math.min(count, 25); i++) {
+      const card = cards.nth(i);
+      const name = (await card.locator("[data-testid='title']").first().innerText().catch(() => "")).trim();
+      if (!name) continue;
+      const ratingText = await card.locator("[data-testid='review-score']").first().innerText().catch(() => "");
+      const rating = Number(ratingText.match(/(\d+\.\d+)/)?.[1]) || null;
+      const priceText = (await card.locator("[data-testid='price-and-discounted-price']").first().innerText().catch(() => "")).trim();
+      const price = priceText ? Number(priceText.replace(/[^\d]/g, "")) || null : null;
+      hotels.push({ name, rating, price, priceText });
+    }
+
+    const qualified = hotels
+      .filter((h) => h.rating !== null && h.rating >= p.minRating && h.price !== null && h.price <= p.maxTotalPrice)
+      .sort((a, b) => b.rating! - a.rating! || a.price! - b.price!);
 
     return {
       destination: p.destination,
+      nights,
+      adults: p.adults,
+      currency,
+      budget: p.maxTotalPrice,
+      minRating: p.minRating,
+      scanned: hotels.length,
+      qualified: qualified.length,
+      best: qualified[0] ?? null,
+      top: qualified.slice(0, 5),
       resultsUrl: page.url(),
-      propertyCount: count,
-      sample: sample.slice(0, 5),
     };
   }
 

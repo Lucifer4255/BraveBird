@@ -207,3 +207,80 @@ Upgraded from "rotate fingerprints" to "design durable identities" (per research
   residential proxies via the proxy pool are the next rung.
 - **CAPTCHA philosophy: avoid > solve** — good identity + proxy + pacing prevents most challenges;
   solving services are the costly fallback.
+
+---
+
+# Extension — "Find best hotel" (fetch price, do NOT book) ✅ DONE
+
+**Result:** `npm run booking` reliably returns e.g. *"Perfectstayz Premium Carnival Suites Near
+Candolim — 9.9/10 · ₹13,804 total · 3 nights · 3 adults"* + runners-up, all rating ≥ 8.0 and
+≤ ₹15,000. Two consecutive runs landed Goa correctly.
+
+**What shipped vs the plan:** destination autocomplete (dynamic-form showcase) → submit →
+**reconcile the results URL** with exact dates/3-adults/INR (Booking's own search params — far more
+reliable than the flaky calendar/occupancy UI, which `reconcileResultsUrl` supersedes). `extract`
+parses `title`/`review-score`/`price-and-discounted-price` per card, filters (rating ≥ minRating AND
+total ≤ maxTotalPrice) and ranks (rating desc, price asc). Key fix: only trust the submitted
+`dest_id` if it resolved to our destination — else Booking defaults to the datacenter IP's city
+(Kolkata); fall back to `ss` text. (`pickDates`/`setAdults` kept as best-effort UI demos, unused.)
+
+
+## Context
+The M0–M8 worker can *run* a Booking search; this extension makes it *answer a question*:
+find a well-rated, under-budget hotel for **3 adults · 3 nights (Goa, Jun 26→29)** and return
+its **name + rating + total price**. We **fetch/compare prices only — no actual booking**
+(irreversible, needs payment + login; an outward action we won't take).
+
+**Locked criteria:** total ≤ **₹15,000** for the stay · rating ≥ **8.0** · **3 nights** · **3 adults**.
+
+## Approach
+Extend `BookingWorkflow` to (a) reliably set **3 adults** + **3-night dates**, (b) extract
+**structured per-hotel data** (name/rating/price), and (c) **filter + rank in our own code**.
+Client-side filtering (we parse and compare) is robust and shows real data-extraction + business
+logic — independent of Booking's own filter UI. Keep `find→wait→act→verify`, reuse `dismissModals`
+(the focus-stealing modal hits these steps too), and keep degraded-variant → `BotWallError` → rotate.
+
+## Step 0 — Recon (first; read-only run)
+`src/scripts/reconBookingResults.ts` (throwaway): on a Goa results page, dump the REAL selectors for
+the **occupancy popup** (adults +/- buttons + value), the **calendar** day cells, and a **property
+card** (title · review-score · price). The occupancy/calendar were flaky before precisely because
+their selectors were guessed — inspect, don't guess.
+
+## Changes — `src/workflows/booking.ts`
+- **`BookingParams`** — add `maxTotalPrice` (15000), `minRating` (8.0), `currency` ("INR"); set
+  `adults: 3`, `checkout: 2026-06-29`.
+- **`setAdults(page, 3)`** — make it actually work (recon selectors): open `occupancy-config`,
+  `dismissModals`, click adults **increment** until the value = 3, **verify** the trigger reads
+  "3 adults". (Was best-effort/defaulted to 2.)
+- **`pickDates`** — reliability pass: `dismissModals`, open calendar, click visible-scoped
+  `[data-date='2026-06-26']`/`['2026-06-29']`, verify the field updates. Fallback: ensure dates land
+  via the results URL (`checkin`/`checkout` query params) so the price is for the right stay.
+- **`extract` → rewrite to structured + filter/rank:**
+  - Wait for `[data-testid='property-card']`; per card parse name `[data-testid='title']`,
+    rating `[data-testid='review-score']` (the /10 number), price
+    `[data-testid='price-and-discounted-price']` (number + currency).
+  - Confirm/force `selected_currency=INR` so the ₹ budget compares correctly.
+  - **Filter** rating ≥ minRating AND total ≤ maxTotalPrice; **rank** by rating desc, price asc.
+  - Return `{ destination, nights, adults, currency, best, matches: [top N], scanned }`;
+    `best: null` + closest few if nothing qualifies.
+
+## Changes — `src/scripts/runBooking.ts`
+- Job → Goa, 2026-06-26 → **2026-06-29**, **adults 3**, **maxTotalPrice 15000**, **minRating 8.0**.
+- Print the chosen hotel (name · rating · total · nights · adults) + a few runners-up.
+
+## Reuse
+- `resolve`/`resolveWithMeta` (`core/locators.ts`) — self-healing form fields.
+- `dismissModals` (`workflows/booking.ts`) — focus-stealing modal (added this session).
+- `classify` + `BotWallError` (`evasion/classifier.ts`, `workflows/base.ts`) — degraded variant → rotate.
+
+## Verification
+- `npm run booking` → returns a hotel with **rating ≥ 8.0** and **total ≤ ₹15,000** for **3 adults /
+  3 nights**; results URL shows `group_adults=3` + the dates. Run 2–3× (modal-dismiss-retry → reliable).
+- Tighten budget so nothing matches → `best: null` + closest options (graceful, no crash).
+- Degraded variant → `BotWallError` → identity rotation via `runJobWithRetries`/Inngest.
+
+## Notes / risks
+- **Currency**: budget assumes INR (₹); recon confirms what Booking serves; force `selected_currency=INR` if not.
+- **Booking variance**: same anti-bot flakiness — handled by modal-dismiss-retry + rotation; reliably
+  winning needs residential proxies (documented ceiling).
+- **No booking**: stop at price discovery — no checkout/payment.
