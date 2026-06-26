@@ -28,6 +28,12 @@ const EnvSchema = z.object({
 
   // Stealth / proxy
   PROXY_URL: z.string().optional().transform((v) => (v ? v : undefined)),
+  // Proxy pool: comma-separated entries. Each entry is a URL, optionally with
+  // geo tags: "http://user:pass@host:port|US|America/New_York".
+  PROXY_URLS: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : [])),
 
   // Credentials
   BOOKING_EMAIL: z.string().optional().transform((v) => (v ? v : undefined)),
@@ -72,6 +78,7 @@ export const config = {
   browser: {
     headless: env.HEADLESS,
     proxyUrl: env.PROXY_URL,
+    proxyUrls: env.PROXY_URLS,
     userAgents: USER_AGENTS,
   },
   credentials: {

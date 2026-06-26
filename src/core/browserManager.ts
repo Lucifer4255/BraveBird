@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { type Browser, type BrowserContext, chromium } from "playwright";
 import { config } from "../config.js";
 import { type Identity, IdentityPool } from "../evasion/identity.js";
+import { ProxyPool } from "../evasion/proxyPool.js";
 import { STEALTH_LAUNCH_ARGS } from "./stealth.js";
 
 export interface AcquireOptions {
@@ -29,10 +30,13 @@ export class BrowserManager {
   private browser?: Browser;
   private readonly contexts = new Set<BrowserContext>();
   private readonly identities: IdentityPool;
+  private readonly proxies: ProxyPool;
   private readonly contextIdentity = new Map<BrowserContext, Identity>();
+  private readonly contextProxy = new Map<BrowserContext, string>();
 
-  constructor(identityPool: IdentityPool = new IdentityPool()) {
+  constructor(identityPool: IdentityPool = new IdentityPool(), proxyPool: ProxyPool = new ProxyPool()) {
     this.identities = identityPool;
+    this.proxies = proxyPool;
   }
 
   async start(): Promise<void> {
@@ -57,13 +61,19 @@ export class BrowserManager {
     const storageState =
       opts.storageState ?? (existsSync(identity.sessionPath) ? identity.sessionPath : undefined);
 
+    // Pair the identity with a geo-coherent proxy (sticky per session key).
+    // Empty pool → undefined → run direct.
+    const proxyUrl =
+      opts.proxyUrl ?? this.proxies.acquire(opts.sessionKey, identity.fingerprint.timezoneId);
+
     const context = await identity.fingerprint.createContext(this.browser, {
       storageState,
-      proxyUrl: opts.proxyUrl,
+      proxyUrl,
     });
 
     this.contexts.add(context);
     this.contextIdentity.set(context, identity);
+    if (proxyUrl) this.contextProxy.set(context, proxyUrl);
     return context;
   }
 
@@ -76,18 +86,24 @@ export class BrowserManager {
       .catch(() => {});
   }
 
-  // Outcome recording → feeds identity health / auto-retire.
+  // Outcome recording → feeds BOTH identity health and proxy health.
   recordSuccess(context: BrowserContext): void {
     const id = this.contextIdentity.get(context);
     if (id) this.identities.recordSuccess(id.id);
+    const proxy = this.contextProxy.get(context);
+    if (proxy) this.proxies.reportSuccess(proxy);
   }
   recordCaptcha(context: BrowserContext): void {
     const id = this.contextIdentity.get(context);
     if (id) this.identities.recordCaptcha(id.id);
+    const proxy = this.contextProxy.get(context);
+    if (proxy) this.proxies.reportBlocked(proxy); // a challenged IP needs a rest
   }
   recordBlock(context: BrowserContext): void {
     const id = this.contextIdentity.get(context);
     if (id) this.identities.recordBlock(id.id);
+    const proxy = this.contextProxy.get(context);
+    if (proxy) this.proxies.reportBlocked(proxy);
   }
   /** Retire the identity that drove this context — it's burned. */
   banIdentity(context: BrowserContext): void {
@@ -102,6 +118,7 @@ export class BrowserManager {
   async releaseContext(context: BrowserContext): Promise<void> {
     this.contexts.delete(context);
     this.contextIdentity.delete(context);
+    this.contextProxy.delete(context);
     await context.close().catch(() => {});
   }
 
@@ -111,6 +128,7 @@ export class BrowserManager {
     }
     this.contexts.clear();
     this.contextIdentity.clear();
+    this.contextProxy.clear();
     await this.browser?.close().catch(() => {});
     this.browser = undefined;
   }
@@ -121,5 +139,9 @@ export class BrowserManager {
 
   get healthyIdentityCount(): number {
     return this.identities.healthyCount;
+  }
+
+  get healthyProxyCount(): number {
+    return this.proxies.healthyCount;
   }
 }
